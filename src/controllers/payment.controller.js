@@ -1,16 +1,10 @@
 import crypto from 'crypto';
 import { env } from '../config/env.js';
-import {
-  initializeTransaction,
-  verifyTransaction,
-  recordPendingPayment,
-  updatePaymentByReference,
-} from '../services/paystack.service.js';
-import { getCvForUser, applyDownloadLocks } from '../services/cv.service.js';
-import { createDownloadAccess } from '../services/download.service.js';
+import { initializeTransaction, recordPendingPayment, verifyPaystackSignature } from '../services/paystack.service.js';
+import { getCvForUser } from '../services/cv.service.js';
 import { TranslationJob } from '../models/TranslationJob.js';
-import { DownloadAccess } from '../models/DownloadAccess.js';
-import { completeTranslationJob } from '../services/translation.service.js';
+import { translationProviderConfigured } from '../services/translation.service.js';
+import { fulfillPaystackReference } from '../services/payment.fulfill.service.js';
 
 function ref(kind, cvId) {
   return `cv_${kind}_${cvId}_${crypto.randomBytes(8).toString('hex')}`;
@@ -26,6 +20,7 @@ export async function getPublicConfig(req, res) {
     downloadPriceGhs: env.DOWNLOAD_PRICE_GHS,
     translationPriceGhs: env.TRANSLATION_PRICE_GHS,
     downloadAccessDays: env.DOWNLOAD_ACCESS_DAYS,
+    translationAvailable: translationProviderConfigured(),
   });
 }
 
@@ -47,16 +42,31 @@ export async function initializePayment(req, res, next) {
       if (!targetLanguage) {
         return res.status(400).json({ error: 'targetLanguage required for translation' });
       }
+      if (!translationProviderConfigured()) {
+        return res.status(503).json({
+          error:
+            'Translation is not available yet. The server needs OPENAI_API_KEY or DEEPL_API_KEY before checkout can start.',
+        });
+      }
       amountGhs = env.TRANSLATION_PRICE_GHS;
       type = 'translation';
       metadata.target_language = String(targetLanguage);
 
-      const job = await TranslationJob.create({
+      let job = await TranslationJob.findOne({
         sourceCvId: cvId,
         userId,
         targetLanguage,
         status: 'pending_payment',
-      });
+      }).sort({ createdAt: -1 });
+
+      if (!job) {
+        job = await TranslationJob.create({
+          sourceCvId: cvId,
+          userId,
+          targetLanguage,
+          status: 'pending_payment',
+        });
+      }
       metadata.translation_job_id = job._id.toString();
     } else {
       return res.status(400).json({ error: 'kind must be download or translation' });
@@ -110,68 +120,65 @@ export async function verifyPayment(req, res, next) {
       return res.status(400).json({ error: 'reference required' });
     }
 
-    const data = await verifyTransaction(reference);
-    const paymentDoc = await updatePaymentByReference(reference, {
-      status: data.status === 'success' ? 'success' : 'failed',
-      channel: data.channel,
-      paystackRaw: data,
-    });
-
-    if (!paymentDoc) {
-      return res.status(404).json({ error: 'Payment record not found' });
-    }
+    const result = await fulfillPaystackReference(reference);
+    const paymentDoc = result.payment;
 
     if (paymentDoc.userId.toString() !== req.user.id) {
       return res.status(403).json({ error: 'Forbidden' });
     }
 
-    if (data.status !== 'success') {
-      return res.json({ ok: false, status: data.status });
+    if (!result.ok) {
+      return res.json({ ok: false, status: result.status });
     }
 
-    const userId = paymentDoc.userId.toString();
-    const cvId = paymentDoc.cvId?.toString();
-
-    if (paymentDoc.type === 'download' && cvId) {
-      await applyDownloadLocks(paymentDoc.cvId, paymentDoc.userId);
-      const paidAt = new Date(data.paid_at || Date.now());
-      const existingAccess = await DownloadAccess.findOne({ paymentId: paymentDoc._id });
-      if (!existingAccess) {
-        await createDownloadAccess(paymentDoc.userId, paymentDoc.cvId, paymentDoc._id, paidAt);
-      }
+    if (result.type === 'download') {
       return res.json({
         ok: true,
         type: 'download',
-        cvId,
-        validUntil: env.DOWNLOAD_ACCESS_DAYS,
+        cvId: result.cvId,
+        validUntil: result.validUntil,
       });
     }
 
-    if (paymentDoc.type === 'translation' && cvId) {
-      const meta = data.metadata || {};
-      const jobId = meta.translation_job_id || meta.translationJobId;
-      let job = jobId ? await TranslationJob.findById(jobId) : null;
-      if (!job) {
-        job = await TranslationJob.findOne({
-          sourceCvId: paymentDoc.cvId,
-          userId: paymentDoc.userId,
-          status: 'pending_payment',
-        }).sort({ createdAt: -1 });
-      }
-
-      let translatedId = job?.translatedCvId?.toString() || null;
-      if (job && job.userId.toString() === userId && job.status !== 'completed') {
-        job.status = 'paid';
-        job.paymentId = paymentDoc._id;
-        await job.save();
-        const { translated } = await completeTranslationJob(job._id, paymentDoc.userId);
-        translatedId = translated?._id?.toString() || null;
-      }
-
-      return res.json({ ok: true, type: 'translation', cvId, translationCvId: translatedId });
+    if (result.type === 'translation') {
+      return res.json({
+        ok: true,
+        type: 'translation',
+        cvId: result.cvId,
+        translationCvId: result.translationCvId,
+        translationStatus: result.translationStatus,
+        translationError: result.translationError || undefined,
+      });
     }
 
     res.json({ ok: true });
+  } catch (e) {
+    next(e);
+  }
+}
+
+export async function paystackWebhook(req, res, next) {
+  try {
+    if (env.PAYSTACK_WEBHOOK_SECRET) {
+      const signature = req.headers['x-paystack-signature'];
+      const raw = req.rawBody || JSON.stringify(req.body);
+      if (!verifyPaystackSignature(raw, signature)) {
+        return res.status(401).json({ error: 'Invalid signature' });
+      }
+    }
+
+    const event = req.body?.event;
+    const reference = req.body?.data?.reference;
+    if (event === 'charge.success' && reference) {
+      try {
+        await fulfillPaystackReference(reference);
+      } catch (e) {
+        // Acknowledge receipt so Paystack does not retry forever on app errors after verify
+        console.error('Paystack webhook fulfillment failed', e.message);
+      }
+    }
+
+    res.json({ received: true });
   } catch (e) {
     next(e);
   }

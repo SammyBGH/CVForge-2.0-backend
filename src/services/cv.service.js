@@ -58,6 +58,13 @@ const DEFAULT_SECTIONS = () => [
     visible: true,
     data: { items: [] },
   },
+  {
+    key: 'languages',
+    type: 'languages',
+    order: 7,
+    visible: true,
+    data: { items: [] },
+  },
 ];
 
 export async function createCv(userId, payload = {}) {
@@ -113,7 +120,11 @@ export async function updateCv(cvId, userId, body) {
   if (body.templateId !== undefined) cv.templateId = body.templateId;
   if (body.themeId !== undefined) cv.themeId = body.themeId;
   if (body.layoutId !== undefined) cv.layoutId = body.layoutId;
-  if (body.customization !== undefined) cv.customization = { ...cv.customization.toObject?.() || cv.customization, ...body.customization };
+  if (body.customization !== undefined) {
+    const currentCustom = typeof cv.customization?.toObject === 'function' ? cv.customization.toObject() : (cv.customization || {});
+    cv.customization = { ...currentCustom, ...body.customization };
+    cv.markModified('customization');
+  }
 
   if (body.sections !== undefined) {
     const merged = body.sections.map((s) => {
@@ -126,9 +137,9 @@ export async function updateCv(cvId, userId, body) {
       };
     });
     cv.sections = merged;
+    cv.markModified('sections');
   }
 
-  cv.markModified('sections');
   await cv.save();
   return cv;
 }
@@ -140,6 +151,9 @@ export async function duplicateCv(cvId, userId) {
   delete plain.createdAt;
   delete plain.updatedAt;
   plain.title = `${plain.title} (copy)`;
+  plain.templateId = original.templateId || 'modern-split';
+  plain.themeId = original.themeId || 'light';
+  plain.layoutId = original.layoutId || 'two-column';
   plain.lockedFields = [];
   plain.downloadPaid = false;
   plain.translationCvIds = [];

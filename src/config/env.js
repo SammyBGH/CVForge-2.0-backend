@@ -1,8 +1,28 @@
 import dotenv from 'dotenv';
+import path from 'path';
+import fs from 'fs';
+import { fileURLToPath } from 'url';
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const serverRootDir = path.resolve(__dirname, '../..');
+
+// Check server directory first, then process.cwd()
+const envPaths = [
+  path.join(serverRootDir, '.env'),
+  path.join(process.cwd(), '.env'),
+  path.join(process.cwd(), 'server', '.env'),
+];
+
+for (const p of envPaths) {
+  if (fs.existsSync(p)) {
+    dotenv.config({ path: p });
+    break;
+  }
+}
 dotenv.config();
 
-const requiredInProd = ['MONGODB_URI', 'JWT_SECRET', 'GOOGLE_CLIENT_ID'];
+const requiredInProd = ['MONGODB_URI', 'JWT_SECRET'];
 
 export const env = {
   NODE_ENV: process.env.NODE_ENV || 'development',
@@ -18,6 +38,9 @@ export const env = {
   DOWNLOAD_ACCESS_DAYS: Number(process.env.DOWNLOAD_ACCESS_DAYS) || 25,
   TRANSLATION_PRICE_GHS: Number(process.env.TRANSLATION_PRICE_GHS) || 6,
   DOWNLOAD_PRICE_GHS: Number(process.env.DOWNLOAD_PRICE_GHS) || 25,
+  OPENAI_API_KEY: process.env.OPENAI_API_KEY || '',
+  OPENAI_MODEL: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+  DEEPL_API_KEY: process.env.DEEPL_API_KEY || '',
 };
 
 export function assertProductionConfig() {

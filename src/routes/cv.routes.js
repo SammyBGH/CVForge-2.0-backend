@@ -31,6 +31,7 @@ router.post('/', validateBody(createBody), cv.create);
 router.get('/:id', cv.getOne);
 router.patch('/:id', validateBody(patchBody), cv.patch);
 router.post('/:id/duplicate', cv.duplicate);
+router.post('/:id/translations/retry', cv.retryTranslation);
 router.delete('/:id', cv.remove);
 
 export default router;

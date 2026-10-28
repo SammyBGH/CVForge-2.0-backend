@@ -33,7 +33,7 @@ const sectionSchema = new mongoose.Schema(
 const customizationSchema = new mongoose.Schema(
   {
     fontFamily: { type: String, default: 'system' },
-    accentColor: { type: String, default: '#2563eb' },
+    accentColor: { type: String, default: '' },
     density: { type: String, enum: ['compact', 'comfortable', 'spacious'], default: 'comfortable' },
   },
   { _id: false }

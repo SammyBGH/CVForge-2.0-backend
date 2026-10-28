@@ -8,6 +8,22 @@ export async function connectDb() {
     return;
   }
   mongoose.set('strictQuery', true);
-  await mongoose.connect(env.MONGODB_URI);
-  logger.info('MongoDB connected');
+
+  try {
+    await mongoose.connect(env.MONGODB_URI, {
+      serverSelectionTimeoutMS: env.NODE_ENV === 'production' ? 15000 : 5000,
+    });
+    logger.info('MongoDB connected');
+  } catch (err) {
+    logger.error(`MongoDB connection error: ${err.message}`);
+    if (env.NODE_ENV === 'production') {
+      throw err;
+    } else {
+      logger.warn('Continuing in development mode despite database connection issue. Check internet connection or MongoDB Atlas access.');
+    }
+  }
+
+  mongoose.connection.on('error', (err) => {
+    logger.error(`MongoDB runtime error: ${err.message}`);
+  });
 }

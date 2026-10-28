@@ -23,4 +23,6 @@ const verifyQuery = z.object({
 
 router.get('/verify', requireAuth, validateQuery(verifyQuery), payment.verifyPayment);
 
+router.post('/webhook', payment.paystackWebhook);
+
 export default router;
